@@ -18,8 +18,6 @@ import (
 )
 
 const (
-	namespace = "http_client"
-
 	subsystemRequests = "requests"
 	subsystemDuration = "duration"
 	subsystemDns      = "dns"
@@ -28,8 +26,15 @@ const (
 )
 
 // DefaultBuckets provides sensible latency buckets (seconds) for HTTP clients.
+// Smallest bucket is 5 ms — suitable for outbound network requests.
 var DefaultBuckets = []float64{
 	0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+}
+
+// DefaultServerBuckets provides latency buckets (seconds) sensitive to sub-ms
+// server-side request durations. Smallest bucket is 0.1 ms (1-digit ms precision).
+var DefaultServerBuckets = []float64{
+	0.0001, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 }
 
 // DefaultDNSBuckets provides sensible latency buckets for DNS resolution.
@@ -46,46 +51,54 @@ type Exporter struct {
 	requestSize     *prometheus.HistogramVec
 	responseSize    *prometheus.HistogramVec
 	errorsTotal     *prometheus.CounterVec
+	disableDNS      bool
 }
 
 // Verify Exporter implements httpexporter.Exporter.
 var _ httpexporter.Exporter = (*Exporter)(nil)
 
-// New creates a Prometheus Exporter with custom duration buckets.
+// New creates a Prometheus client Exporter with custom duration buckets.
+// Metrics are prefixed with http_client_. Pass nil to use DefaultBuckets.
 func New(buckets []float64) *Exporter {
+	return newWithNamespace("http_client", buckets, DefaultBuckets)
+}
+
+// NewServer creates a Prometheus server Exporter with sub-ms precision buckets.
+// Metrics are prefixed with http_server_. Pass nil to use DefaultServerBuckets.
+func NewServer(buckets []float64) *Exporter {
+	return newWithNamespace("http_server", buckets, DefaultServerBuckets)
+}
+
+func newWithNamespace(ns string, buckets []float64, defaultBuckets []float64) *Exporter {
 	if buckets == nil {
-		buckets = DefaultBuckets
+		buckets = defaultBuckets
 	}
+
+	server := ns == "http_server"
 
 	labels := []string{"method", "host", "path", "status_code"}
 	statusCodeLabels := []string{"status_code", "status_family"}
 
 	e := &Exporter{
+		disableDNS: server,
+
 		requestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
+			Namespace: ns,
 			Subsystem: subsystemRequests,
 			Name:      "total",
 			Help:      "Total number of HTTP requests made.",
 		}, labels),
 
 		requestDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace,
+			Namespace: ns,
 			Subsystem: subsystemDuration,
 			Name:      "seconds",
 			Help:      "HTTP request duration in seconds.",
 			Buckets:   buckets,
 		}, labels),
 
-		dnsDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace,
-			Subsystem: subsystemDns,
-			Name:      "lookup_seconds",
-			Help:      "DNS lookup duration in seconds.",
-			Buckets:   DefaultDNSBuckets,
-		}, labels),
-
 		requestSize: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace,
+			Namespace: ns,
 			Subsystem: subsystemSize,
 			Name:      "request_bytes",
 			Help:      "HTTP request body size in bytes.",
@@ -93,7 +106,7 @@ func New(buckets []float64) *Exporter {
 		}, labels),
 
 		responseSize: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: namespace,
+			Namespace: ns,
 			Subsystem: subsystemSize,
 			Name:      "response_bytes",
 			Help:      "HTTP response body size in bytes.",
@@ -101,18 +114,28 @@ func New(buckets []float64) *Exporter {
 		}, labels),
 
 		errorsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
+			Namespace: ns,
 			Subsystem: subsystemErrors,
 			Name:      "total",
 			Help:      "Total number of HTTP request errors.",
 		}, labels),
 
 		statusCodeTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Namespace: namespace,
+			Namespace: ns,
 			Subsystem: "response",
 			Name:      "status_code_total",
 			Help:      "Total count of HTTP response status codes.",
 		}, statusCodeLabels),
+	}
+
+	if !server {
+		e.dnsDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: ns,
+			Subsystem: subsystemDns,
+			Name:      "lookup_seconds",
+			Help:      "DNS lookup duration in seconds.",
+			Buckets:   DefaultDNSBuckets,
+		}, labels)
 	}
 
 	return e
@@ -133,10 +156,12 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	e.requestsTotal.Describe(ch)
 	e.statusCodeTotal.Describe(ch)
 	e.requestDuration.Describe(ch)
-	e.dnsDuration.Describe(ch)
 	e.requestSize.Describe(ch)
 	e.responseSize.Describe(ch)
 	e.errorsTotal.Describe(ch)
+	if !e.disableDNS {
+		e.dnsDuration.Describe(ch)
+	}
 }
 
 // Collect implements prometheus.Collector.
@@ -144,10 +169,12 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	e.requestsTotal.Collect(ch)
 	e.statusCodeTotal.Collect(ch)
 	e.requestDuration.Collect(ch)
-	e.dnsDuration.Collect(ch)
 	e.requestSize.Collect(ch)
 	e.responseSize.Collect(ch)
 	e.errorsTotal.Collect(ch)
+	if !e.disableDNS {
+		e.dnsDuration.Collect(ch)
+	}
 }
 
 // Export records HTTP metrics from the request/response cycle.
@@ -180,7 +207,7 @@ func (e *Exporter) Export(ctx context.Context, req *httpexporter.RequestInfo, re
 		}).Inc()
 	}
 
-	if req.DNSDuration > 0 {
+	if !e.disableDNS && req.DNSDuration > 0 {
 		e.dnsDuration.With(labels).Observe(req.DNSDuration.Seconds())
 	}
 

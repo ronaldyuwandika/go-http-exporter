@@ -143,6 +143,38 @@ func TestImplementsCollector(t *testing.T) {
 	var _ prometheus.Collector = (*Exporter)(nil)
 }
 
+func TestNewServer(t *testing.T) {
+	e := NewServer(nil)
+	if e == nil {
+		t.Fatal("expected non-nil server exporter")
+	}
+}
+
+func TestNewServerPrefix(t *testing.T) {
+	e := NewServer(nil)
+	req := &httpexporter.RequestInfo{
+		Method: "GET",
+		Host:   "localhost",
+		Path:   "/",
+	}
+	resp := &httpexporter.ResponseInfo{
+		StatusCode: 200,
+		Duration:   time.Millisecond,
+	}
+	e.Export(context.Background(), req, resp)
+
+	ch := make(chan prometheus.Metric, 10)
+	e.Collect(ch)
+	close(ch)
+
+	for m := range ch {
+		desc := m.Desc().String()
+		if !descMatches(desc, "http_server") {
+			t.Fatalf("expected http_server prefix, got: %s", desc)
+		}
+	}
+}
+
 func TestStatusFamily(t *testing.T) {
 	tests := []struct {
 		code   int

@@ -1,14 +1,16 @@
 # Go HTTP Exporter
 
-Prometheus-ready HTTP client metrics SDK for Go. One interface, four HTTP clients.
+Prometheus-ready HTTP client & server metrics SDK for Go. One interface, both sides.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/ronaldyuwandika/go-http-exporter.svg)](https://pkg.go.dev/github.com/ronaldyuwandika/go-http-exporter)
 ![Go Version](https://img.shields.io/badge/Go-1.24%2B-blue)
 
 ## Features
 
+- **Client & server** — instrument both outgoing requests and incoming handlers
 - **Plug any exporter** — Prometheus (built-in), OpenTelemetry, custom logging
 - **Four clients** — `net/http`, `go-resty/resty`, `imroc/req`, `dghubble/sling`
+- **Sub-ms precision** — server histograms detect down to 0.1 ms (1-digit ms)
 - **Path normalization** — auto-detect UUIDs, IDs, dates, slugs to prevent cardinality explosion
 - **DNS latency** — DNS resolution timing via `net/http/httptrace`
 - **Per-path metrics** — latency histograms, error rates, request/response sizes per path
@@ -106,7 +108,33 @@ client := slingexporter.NewHTTPClient(myExporter, nil,
 )
 ```
 
-## Prometheus metrics
+## Server instrumentation
+
+Wrap any `http.Handler` to capture request duration, status code, and response size. Path normalization is on by default.
+
+```go
+import (
+    "github.com/ronaldyuwandika/go-http-exporter/httpserver"
+    "github.com/ronaldyuwandika/go-http-exporter/promexp"
+)
+
+exporter := promexp.NewServer(nil) // http_server_ prefix, 0.1ms buckets
+exporter.Register()
+
+handler := httpserver.New(mux, httpexporter.WithExporter(exporter))
+http.ListenAndServe(":8080", handler)
+```
+
+### Precision
+
+| Side | Bucket start | Metric prefix |
+|------|-------------|---------------|
+| Client (`promexp.New`) | 5 ms | `http_client_` |
+| Server (`promexp.NewServer`) | 0.1 ms | `http_server_` |
+
+Server histograms start at 0.1 ms (100 µs) for single-digit millisecond detection — suitable for local handler durations that complete in microseconds.
+
+## Prometheus client metrics
 
 | Metric | Type | Labels |
 |--------|------|--------|
@@ -117,6 +145,19 @@ client := slingexporter.NewHTTPClient(myExporter, nil,
 | `http_client_size_response_bytes` | Histogram | method, host, path, status_code |
 | `http_client_errors_total` | Counter | method, host, path, status_code |
 | `http_client_response_status_code_total` | Counter | status_code, status_family |
+
+## Prometheus server metrics
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `http_server_requests_total` | Counter | method, host, path, status_code |
+| `http_server_duration_seconds` | Histogram | method, host, path, status_code |
+| `http_server_size_request_bytes` | Histogram | method, host, path, status_code |
+| `http_server_size_response_bytes` | Histogram | method, host, path, status_code |
+| `http_server_errors_total` | Counter | method, host, path, status_code |
+| `http_server_response_status_code_total` | Counter | status_code, status_family |
+
+> DNS lookup is client-only — `http_server_dns_lookup_seconds` is intentionally omitted from the server exporter.
 
 Alerting examples:
 
