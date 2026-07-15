@@ -1,6 +1,7 @@
 package httptransport
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptrace"
@@ -79,19 +80,13 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	if resp.Body != nil {
-		exporter := t.opts.Exporter
 		resp.Body = &trackedBody{
 			ReadCloser: resp.Body,
-			onClose: func(bytesRead int64, bodyReadDur time.Duration, readErr error) {
-				rsi.Duration = ttfb + bodyReadDur
-				rsi.BodySize = bytesRead
-				if readErr != nil && rsi.Error == nil {
-					rsi.Error = readErr
-				}
-				if exporter != nil {
-					exporter.Export(ctx, ri, rsi)
-				}
-			},
+			rsi:        rsi,
+			ttfb:       ttfb,
+			ri:         ri,
+			ctx:        ctx,
+			exp:        t.opts.Exporter,
 		}
 	} else {
 		if t.opts.Exporter != nil {
@@ -103,16 +98,21 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // trackedBody wraps an io.ReadCloser to track actual bytes read, read duration,
-// and read errors. The onClose callback fires exactly once even if Close is
-// called multiple times (a common Go pattern).
+// and read errors. Export state is stored in struct fields (no closure allocation).
+// Export fires once even if Close is called multiple times.
 type trackedBody struct {
 	io.ReadCloser
-	onClose   func(bytesRead int64, bodyReadDuration time.Duration, readErr error)
-	closeOnce sync.Once
+	closeDone int32
 	bytesRead int64
 	readStart time.Time
 	readOnce  sync.Once
 	readErr   error
+
+	rsi  *httpexporter.ResponseInfo
+	ttfb time.Duration
+	ri   *httpexporter.RequestInfo
+	ctx  context.Context
+	exp  httpexporter.Exporter
 }
 
 func (b *trackedBody) Read(p []byte) (int, error) {
@@ -129,12 +129,19 @@ func (b *trackedBody) Read(p []byte) (int, error) {
 
 func (b *trackedBody) Close() error {
 	err := b.ReadCloser.Close()
-	b.closeOnce.Do(func() {
+	if atomic.CompareAndSwapInt32(&b.closeDone, 0, 1) {
 		var bodyDur time.Duration
 		if !b.readStart.IsZero() {
 			bodyDur = time.Since(b.readStart)
 		}
-		b.onClose(b.bytesRead, bodyDur, b.readErr)
-	})
+		b.rsi.Duration = b.ttfb + bodyDur
+		b.rsi.BodySize = b.bytesRead
+		if b.readErr != nil && b.rsi.Error == nil {
+			b.rsi.Error = b.readErr
+		}
+		if b.exp != nil {
+			b.exp.Export(b.ctx, b.ri, b.rsi)
+		}
+	}
 	return err
 }

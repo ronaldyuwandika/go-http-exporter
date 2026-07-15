@@ -216,3 +216,83 @@ func TestMiddlewareStatusFallback(t *testing.T) {
 		t.Fatalf("expected implicit 200, got %d", capturedCode)
 	}
 }
+
+func TestResponseWriterFlusher(t *testing.T) {
+	var flushed bool
+
+	handler := New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("wrapper does not implement http.Flusher")
+			return
+		}
+		f.Flush()
+		flushed = true
+	}))
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	http.Get(server.URL + "/flush")
+
+	if !flushed {
+		t.Fatal("Flush was not called")
+	}
+}
+
+func TestResponseWriterHijacker(t *testing.T) {
+	handler := New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := w.(http.Hijacker); !ok {
+			t.Error("wrapper does not implement http.Hijacker")
+		}
+	}))
+
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/hijack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+}
+
+func TestMiddlewarePanicRecovery(t *testing.T) {
+	var capturedCode int
+	var captured bool
+
+	handler := New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("crash")
+	}),
+		httpexporter.WithExporter(
+			httpexporter.ExporterFunc(func(ctx context.Context, req *httpexporter.RequestInfo, resp *httpexporter.ResponseInfo) {
+				capturedCode = resp.StatusCode
+				captured = true
+			}),
+		),
+	)
+
+	// Simulate net/http's built-in panic recovery by wrapping manually.
+	panicHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			recover()
+		}()
+		handler.ServeHTTP(w, r)
+	})
+
+	server := httptest.NewServer(panicHandler)
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/panic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if !captured {
+		t.Fatal("panic was not captured by middleware")
+	}
+	if capturedCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500 on panic, got %d", capturedCode)
+	}
+}

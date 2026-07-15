@@ -12,6 +12,8 @@
 package httpserver
 
 import (
+	"bufio"
+	"net"
 	"net/http"
 	"time"
 
@@ -19,7 +21,8 @@ import (
 )
 
 // responseWriter wraps http.ResponseWriter to capture the status code and
-// response body size.
+// response body size while preserving optional interfaces (Flusher, Hijacker,
+// Pusher) that downstream handlers or the HTTP server may rely on.
 type responseWriter struct {
 	http.ResponseWriter
 	statusCode   int
@@ -35,6 +38,32 @@ func (w *responseWriter) Write(b []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(b)
 	w.bytesWritten += int64(n)
 	return n, err
+}
+
+// Flush sends buffered data to the client. Delegates to the underlying writer
+// if it implements http.Flusher, otherwise is a no-op.
+func (w *responseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack lets the caller take over the connection. Delegates to the underlying
+// writer if it implements http.Hijacker, otherwise returns ErrNotSupported.
+func (w *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+// Push initiates an HTTP/2 server push. Delegates to the underlying writer if
+// it implements http.Pusher, otherwise returns ErrNotSupported.
+func (w *responseWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := w.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
 }
 
 // Middleware wraps an http.Handler and exports metrics for every request.
@@ -74,17 +103,33 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+
+	defer func() {
+		if v := recover(); v != nil {
+			dur := time.Since(start)
+			rsi := &httpexporter.ResponseInfo{
+				StatusCode: http.StatusInternalServerError,
+				Status:     http.StatusText(http.StatusInternalServerError),
+				Duration:   dur,
+				BodySize:   sw.bytesWritten,
+			}
+			if m.opts.Exporter != nil {
+				m.opts.Exporter.Export(r.Context(), ri, rsi)
+			}
+			panic(v)
+		}
+
+		dur := time.Since(start)
+		rsi := &httpexporter.ResponseInfo{
+			StatusCode: sw.statusCode,
+			Status:     http.StatusText(sw.statusCode),
+			Duration:   dur,
+			BodySize:   sw.bytesWritten,
+		}
+		if m.opts.Exporter != nil {
+			m.opts.Exporter.Export(r.Context(), ri, rsi)
+		}
+	}()
+
 	m.handler.ServeHTTP(sw, r)
-
-	dur := time.Since(start)
-	rsi := &httpexporter.ResponseInfo{
-		StatusCode: sw.statusCode,
-		Status:     http.StatusText(sw.statusCode),
-		Duration:   dur,
-		BodySize:   sw.bytesWritten,
-	}
-
-	if m.opts.Exporter != nil {
-		m.opts.Exporter.Export(r.Context(), ri, rsi)
-	}
 }
