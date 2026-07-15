@@ -1,8 +1,10 @@
 package httptransport
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptrace"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -57,7 +59,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	start := time.Now()
 	resp, err := t.base.RoundTrip(req)
-	dur := time.Since(start)
+	ttfb := time.Since(start)
 
 	ctx := req.Context()
 	ri := httpexporter.NewRequestInfo(req)
@@ -67,8 +69,68 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		ri.NormalizedPath = t.opts.PathNormalizer(ri.Path)
 	}
 
-	rsi := httpexporter.NewResponseInfo(resp, dur, err)
-	t.opts.Exporter.Export(ctx, ri, rsi)
+	rsi := httpexporter.NewResponseInfo(resp, ttfb, err)
 
-	return resp, err
+	if err != nil {
+		if t.opts.Exporter != nil {
+			t.opts.Exporter.Export(ctx, ri, rsi)
+		}
+		return resp, err
+	}
+
+	if resp.Body != nil {
+		exporter := t.opts.Exporter
+		resp.Body = &trackedBody{
+			ReadCloser: resp.Body,
+			onClose: func(bytesRead int64, bodyReadDur time.Duration, readErr error) {
+				rsi.Duration = ttfb + bodyReadDur
+				rsi.BodySize = bytesRead
+				if readErr != nil && rsi.Error == nil {
+					rsi.Error = readErr
+				}
+				if exporter != nil {
+					exporter.Export(ctx, ri, rsi)
+				}
+			},
+		}
+	} else {
+		if t.opts.Exporter != nil {
+			t.opts.Exporter.Export(ctx, ri, rsi)
+		}
+	}
+
+	return resp, nil
+}
+
+// trackedBody wraps an io.ReadCloser to track actual bytes read, read duration,
+// and read errors. The onClose callback fires exactly once when Close is called.
+type trackedBody struct {
+	io.ReadCloser
+	onClose   func(bytesRead int64, bodyReadDuration time.Duration, readErr error)
+	bytesRead int64
+	readStart time.Time
+	readOnce  sync.Once
+	readErr   error
+}
+
+func (b *trackedBody) Read(p []byte) (int, error) {
+	b.readOnce.Do(func() {
+		b.readStart = time.Now()
+	})
+	n, err := b.ReadCloser.Read(p)
+	b.bytesRead += int64(n)
+	if err != nil && err != io.EOF {
+		b.readErr = err
+	}
+	return n, err
+}
+
+func (b *trackedBody) Close() error {
+	err := b.ReadCloser.Close()
+	var bodyDur time.Duration
+	if !b.readStart.IsZero() {
+		bodyDur = time.Since(b.readStart)
+	}
+	b.onClose(b.bytesRead, bodyDur, b.readErr)
+	return err
 }

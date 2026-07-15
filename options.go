@@ -36,8 +36,9 @@ func WithPathNormalizer(fn PathNormalizer) Option {
 // DefaultOptions returns the default Options.
 func DefaultOptions() *Options {
 	return &Options{
-		Exporter:  NoopExporter,
-		Transport: http.DefaultTransport,
+		Exporter:       NoopExporter,
+		Transport:      http.DefaultTransport,
+		PathNormalizer: SlugNormalizer,
 		ShouldExport: func(req *http.Request) bool {
 			return true
 		},

@@ -129,6 +129,70 @@ sum(rate(http_client_response_status_code_total{status_family=~"4xx|5xx"}[5m]))
 histogram_quantile(0.99, rate(http_client_duration_seconds_bucket[5m]))
 ```
 
+## Instrument all routes
+
+The transport wrapper captures **every HTTP request** automatically — you don't need to annotate routes individually. Combined with path normalization, dynamic segments like `/users/42` are grouped into `/users/:id` for clean metrics.
+
+### Standard net/http
+
+Wrap the transport once and all requests through that client are instrumented:
+
+```go
+transport := httptransport.New(
+    httpexporter.WithExporter(myExporter),
+    // PathNormalizer is enabled by default (SlugNormalizer)
+)
+client := &http.Client{Transport: transport}
+
+// All of these are automatically normalized:
+client.Get("https://api.example.com/users/42")       // path: /users/:id
+client.Get("https://api.example.com/users/abc-123")   // path: /users/:slug
+client.Post("https://api.example.com/orders", ...)    // path: /orders
+```
+
+### go-resty/resty
+
+```go
+client := resty.New()
+restyexporter.Install(client, myExporter)
+
+// For path normalization + DNS timing, also wrap the transport:
+client.SetTransport(httptransport.New(
+    httpexporter.WithExporter(myExporter),
+))
+```
+
+### imroc/req
+
+```go
+client := reqexporter.NewClient(myExporter)
+
+// For path normalization + DNS timing:
+client.SetTransport(httptransport.New(
+    httpexporter.WithExporter(myExporter),
+))
+```
+
+### dghubble/sling
+
+```go
+client := slingexporter.NewHTTPClient(myExporter, nil)
+// Path normalization is on by default via the wrapped transport.
+```
+
+### Filtering specific routes
+
+Use `WithShouldExport` to skip health-check or internal endpoints:
+
+```go
+transport := httptransport.New(
+    httpexporter.WithExporter(myExporter),
+    httpexporter.WithShouldExport(func(r *http.Request) bool {
+        return r.URL.Path != "/health"
+    }),
+)
+```
+
 ## Path normalization
 
 Prevent cardinality explosion by grouping dynamic path segments:
