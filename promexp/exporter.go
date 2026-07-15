@@ -40,6 +40,7 @@ var DefaultDNSBuckets = []float64{
 // Exporter records HTTP client metrics via Prometheus.
 type Exporter struct {
 	requestsTotal   *prometheus.CounterVec
+	statusCodeTotal *prometheus.CounterVec
 	requestDuration *prometheus.HistogramVec
 	dnsDuration     *prometheus.HistogramVec
 	requestSize     *prometheus.HistogramVec
@@ -57,6 +58,7 @@ func New(buckets []float64) *Exporter {
 	}
 
 	labels := []string{"method", "host", "path", "status_code"}
+	statusCodeLabels := []string{"status_code", "status_family"}
 
 	e := &Exporter{
 		requestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -104,6 +106,13 @@ func New(buckets []float64) *Exporter {
 			Name:      "total",
 			Help:      "Total number of HTTP request errors.",
 		}, labels),
+
+		statusCodeTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace,
+			Subsystem: "response",
+			Name:      "status_code_total",
+			Help:      "Total count of HTTP response status codes.",
+		}, statusCodeLabels),
 	}
 
 	return e
@@ -122,6 +131,7 @@ func (e *Exporter) MustRegister(r prometheus.Registerer) {
 // Describe implements prometheus.Collector.
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	e.requestsTotal.Describe(ch)
+	e.statusCodeTotal.Describe(ch)
 	e.requestDuration.Describe(ch)
 	e.dnsDuration.Describe(ch)
 	e.requestSize.Describe(ch)
@@ -132,6 +142,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 // Collect implements prometheus.Collector.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	e.requestsTotal.Collect(ch)
+	e.statusCodeTotal.Collect(ch)
 	e.requestDuration.Collect(ch)
 	e.dnsDuration.Collect(ch)
 	e.requestSize.Collect(ch)
@@ -162,6 +173,13 @@ func (e *Exporter) Export(ctx context.Context, req *httpexporter.RequestInfo, re
 	e.requestsTotal.With(labels).Inc()
 	e.requestDuration.With(labels).Observe(resp.Duration.Seconds())
 
+	if resp != nil && resp.StatusCode > 0 {
+		e.statusCodeTotal.With(prometheus.Labels{
+			"status_code":   statusCode,
+			"status_family": statusFamily(resp.StatusCode),
+		}).Inc()
+	}
+
 	if req.DNSDuration > 0 {
 		e.dnsDuration.With(labels).Observe(req.DNSDuration.Seconds())
 	}
@@ -174,5 +192,20 @@ func (e *Exporter) Export(ctx context.Context, req *httpexporter.RequestInfo, re
 	}
 	if resp != nil && resp.Error != nil {
 		e.errorsTotal.With(labels).Inc()
+	}
+}
+
+func statusFamily(code int) string {
+	switch {
+	case code < 200:
+		return "1xx"
+	case code < 300:
+		return "2xx"
+	case code < 400:
+		return "3xx"
+	case code < 500:
+		return "4xx"
+	default:
+		return "5xx"
 	}
 }
