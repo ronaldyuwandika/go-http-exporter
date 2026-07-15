@@ -36,6 +36,8 @@ func Install(client *resty.Client, e httpexporter.Exporter) {
 
 		ri := httpexporter.NewRequestInfo(resp.Request.RawRequest)
 		rsi := httpexporter.NewResponseInfo(resp.RawResponse, dur, nil)
+		// Resty buffers the body; ContentLength may be -1 for chunked.
+		rsi.BodySize = resp.Size()
 		e.Export(resp.Request.Context(), ri, rsi)
 		return nil
 	})

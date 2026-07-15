@@ -133,6 +133,40 @@ func TestTransportNilExporter(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestTransportDoubleClose(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data"))
+	}))
+	defer server.Close()
+
+	var exportCount int
+	var mu sync.Mutex
+
+	tr := New(httpexporter.WithExporter(
+		httpexporter.ExporterFunc(func(ctx context.Context, req *httpexporter.RequestInfo, resp *httpexporter.ResponseInfo) {
+			mu.Lock()
+			exportCount++
+			mu.Unlock()
+		}),
+	))
+
+	client := &http.Client{Transport: tr}
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.ReadAll(resp.Body)
+	resp.Body.Close()
+	resp.Body.Close() // second close must not trigger export
+
+	mu.Lock()
+	defer mu.Unlock()
+	if exportCount != 1 {
+		t.Fatalf("expected 1 export, got %d", exportCount)
+	}
+}
+
 func TestTransportBodyReadError(t *testing.T) {
 	var mu sync.Mutex
 	var capturedErr error

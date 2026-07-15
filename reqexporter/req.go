@@ -48,6 +48,8 @@ func Install(client *req.Client, e httpexporter.Exporter) {
 			ri = &httpexporter.RequestInfo{}
 		}
 		rsi := httpexporter.NewResponseInfo(resp.Response, dur, nil)
+		// req buffers the body; ContentLength may be -1 for chunked.
+		rsi.BodySize = int64(len(resp.Bytes()))
 		e.Export(resp.Request.Context(), ri, rsi)
 		return nil
 	})
