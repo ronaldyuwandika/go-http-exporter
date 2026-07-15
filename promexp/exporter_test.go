@@ -143,6 +143,98 @@ func TestImplementsCollector(t *testing.T) {
 	var _ prometheus.Collector = (*Exporter)(nil)
 }
 
+func TestStatusFamily(t *testing.T) {
+	tests := []struct {
+		code   int
+		family string
+	}{
+		{100, "1xx"}, {199, "1xx"},
+		{200, "2xx"}, {299, "2xx"},
+		{301, "3xx"}, {399, "3xx"},
+		{400, "4xx"}, {499, "4xx"},
+		{500, "5xx"}, {502, "5xx"}, {503, "5xx"},
+	}
+	for _, tt := range tests {
+		got := statusFamily(tt.code)
+		if got != tt.family {
+			t.Errorf("statusFamily(%d) = %s, want %s", tt.code, got, tt.family)
+		}
+	}
+}
+
+func TestStatusCodeCounter(t *testing.T) {
+	e := New(nil)
+
+	req := &httpexporter.RequestInfo{
+		Method: "GET",
+		Host:   "api.example.com",
+		Path:   "/ok",
+	}
+	resp := &httpexporter.ResponseInfo{
+		StatusCode: 200,
+		Duration:   10 * time.Millisecond,
+	}
+
+	e.Export(context.Background(), req, resp)
+
+	// Verify the status_code counter was created with status_family label.
+	found := false
+	ch := make(chan prometheus.Metric, 30)
+	e.Collect(ch)
+	close(ch)
+
+	for m := range ch {
+		desc := m.Desc().String()
+		if descMatches(desc, "status_code_total") {
+			found = true
+			if !descMatches(desc, "status_family") {
+				t.Fatal("status_code_total missing status_family label")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("status_code_total metric not found in collection")
+	}
+}
+
+func TestStatusCodeCounterMultiple(t *testing.T) {
+	e := New(nil)
+
+	for _, code := range []int{200, 200, 404, 500, 200, 503} {
+		e.Export(context.Background(),
+			&httpexporter.RequestInfo{Method: "GET", Host: "api", Path: "/x"},
+			&httpexporter.ResponseInfo{StatusCode: code, Duration: time.Millisecond},
+		)
+	}
+
+	ch := make(chan prometheus.Metric, 40)
+	e.Collect(ch)
+	close(ch)
+
+	statusCodeTotalCount := 0
+	for m := range ch {
+		if descMatches(m.Desc().String(), "status_code_total") {
+			statusCodeTotalCount++
+		}
+	}
+	if statusCodeTotalCount < 3 {
+		t.Fatalf("expected at least 3 status_code_total series, got %d", statusCodeTotalCount)
+	}
+}
+
+func TestStatusCodeCounterNoStatusCode(t *testing.T) {
+	e := New(nil)
+
+	req := &httpexporter.RequestInfo{Method: "GET", Host: "api", Path: "/"}
+	resp := &httpexporter.ResponseInfo{
+		Error:    http.ErrHandlerTimeout,
+		Duration: time.Second,
+	}
+
+	// Should not panic when StatusCode is 0 (error case).
+	e.Export(context.Background(), req, resp)
+}
+
 func descMatches(desc, substr string) bool {
 	return len(desc) > 0 && contains(desc, substr)
 }

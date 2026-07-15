@@ -47,7 +47,12 @@ func Install(client *resty.Client, e httpexporter.Exporter) {
 		}
 		dur := time.Since(start)
 
-		ri := httpexporter.NewRequestInfo(r.RawRequest)
+		var ri *httpexporter.RequestInfo
+		if r.RawRequest != nil {
+			ri = httpexporter.NewRequestInfo(r.RawRequest)
+		} else {
+			ri = &httpexporter.RequestInfo{}
+		}
 		e.Export(r.Context(), ri, httpexporter.NewResponseInfo(nil, dur, err))
 	})
 }
