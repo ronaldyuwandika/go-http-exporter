@@ -103,10 +103,12 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // trackedBody wraps an io.ReadCloser to track actual bytes read, read duration,
-// and read errors. The onClose callback fires exactly once when Close is called.
+// and read errors. The onClose callback fires exactly once even if Close is
+// called multiple times (a common Go pattern).
 type trackedBody struct {
 	io.ReadCloser
 	onClose   func(bytesRead int64, bodyReadDuration time.Duration, readErr error)
+	closeOnce sync.Once
 	bytesRead int64
 	readStart time.Time
 	readOnce  sync.Once
@@ -127,10 +129,12 @@ func (b *trackedBody) Read(p []byte) (int, error) {
 
 func (b *trackedBody) Close() error {
 	err := b.ReadCloser.Close()
-	var bodyDur time.Duration
-	if !b.readStart.IsZero() {
-		bodyDur = time.Since(b.readStart)
-	}
-	b.onClose(b.bytesRead, bodyDur, b.readErr)
+	b.closeOnce.Do(func() {
+		var bodyDur time.Duration
+		if !b.readStart.IsZero() {
+			bodyDur = time.Since(b.readStart)
+		}
+		b.onClose(b.bytesRead, bodyDur, b.readErr)
+	})
 	return err
 }

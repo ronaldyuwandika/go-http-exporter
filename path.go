@@ -6,7 +6,12 @@ import (
 	"sync"
 )
 
-var slugCache sync.Map
+const slugCacheCap = 10_000
+
+var (
+	slugCache   = make(map[string]string)
+	slugCacheMu sync.RWMutex
+)
 
 // SlugNormalizer detects common dynamic path segments (UUIDs, numeric IDs,
 // hex hashes, ISO dates) and replaces them with placeholder tags.
@@ -16,20 +21,25 @@ var slugCache sync.Map
 //	/stats/2024-01-15       ->  /stats/:date
 //	/files/a1b2c3d4e5f6    ->  /files/:hex
 //
-// Results are cached via sync.Map for repeated paths.
+// Results are cached in a bounded map (10k entries) to prevent unbounded
+// memory growth from high-cardinality paths.
 func SlugNormalizer(path string) string {
 	if path == "" {
 		return path
 	}
 
-	if cached, ok := slugCache.Load(path); ok {
-		return cached.(string)
+	slugCacheMu.RLock()
+	cached, ok := slugCache[path]
+	slugCacheMu.RUnlock()
+	if ok {
+		return cached
 	}
 
 	trimmed := strings.TrimRight(path, "/")
 	if trimmed == "" {
-		slugCache.Store(path, "/")
-		return "/"
+		cached = "/"
+		storeSlug(path, cached)
+		return cached
 	}
 
 	segments := strings.Split(strings.Trim(trimmed, "/"), "/")
@@ -56,8 +66,18 @@ func SlugNormalizer(path string) string {
 	}
 
 	result := "/" + strings.Join(normalized, "/")
-	slugCache.Store(path, result)
+	storeSlug(path, result)
 	return result
+}
+
+func storeSlug(path, result string) {
+	slugCacheMu.Lock()
+	if len(slugCache) >= slugCacheCap {
+		// evict all — simple, O(1) amortized, prevents slow leak
+		slugCache = make(map[string]string, slugCacheCap)
+	}
+	slugCache[path] = result
+	slugCacheMu.Unlock()
 }
 
 var (
