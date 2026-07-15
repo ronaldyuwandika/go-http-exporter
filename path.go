@@ -3,7 +3,10 @@ package httpexporter
 import (
 	"regexp"
 	"strings"
+	"sync"
 )
+
+var slugCache sync.Map
 
 // SlugNormalizer detects common dynamic path segments (UUIDs, numeric IDs,
 // hex hashes, ISO dates) and replaces them with placeholder tags.
@@ -12,13 +15,20 @@ import (
 //	/users/42              ->  /users/:id
 //	/stats/2024-01-15       ->  /stats/:date
 //	/files/a1b2c3d4e5f6    ->  /files/:hex
+//
+// Results are cached via sync.Map for repeated paths.
 func SlugNormalizer(path string) string {
 	if path == "" {
 		return path
 	}
 
+	if cached, ok := slugCache.Load(path); ok {
+		return cached.(string)
+	}
+
 	trimmed := strings.TrimRight(path, "/")
 	if trimmed == "" {
+		slugCache.Store(path, "/")
 		return "/"
 	}
 
@@ -45,7 +55,9 @@ func SlugNormalizer(path string) string {
 		}
 	}
 
-	return "/" + strings.Join(normalized, "/")
+	result := "/" + strings.Join(normalized, "/")
+	slugCache.Store(path, result)
+	return result
 }
 
 var (

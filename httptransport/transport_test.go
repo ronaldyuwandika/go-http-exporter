@@ -3,6 +3,7 @@ package httptransport
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -34,6 +35,8 @@ func TestTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Read body fully before close to test body tracking
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
 	mu.Lock()
@@ -43,6 +46,12 @@ func TestTransport(t *testing.T) {
 	}
 	if captured.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", captured.StatusCode)
+	}
+	if captured.BodySize != int64(len(body)) {
+		t.Fatalf("expected body size %d, got %d", len(body), captured.BodySize)
+	}
+	if captured.Duration <= 0 {
+		t.Fatal("expected positive duration")
 	}
 }
 
@@ -105,6 +114,49 @@ func TestTransportDefaultOptions(t *testing.T) {
 func TestTransportNilTransport(t *testing.T) {
 	// Just ensure no panic
 	_ = New(httpexporter.WithTransport(nil))
+}
+
+func TestTransportNilExporter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	tr := New(httpexporter.WithExporter(nil))
+	client := &http.Client{Transport: tr}
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+}
+
+func TestTransportBodyReadError(t *testing.T) {
+	var mu sync.Mutex
+	var capturedErr error
+
+	tr := New(httpexporter.WithExporter(
+		httpexporter.ExporterFunc(func(ctx context.Context, req *httpexporter.RequestInfo, resp *httpexporter.ResponseInfo) {
+			mu.Lock()
+			capturedErr = resp.Error
+			mu.Unlock()
+		}),
+	))
+
+	client := &http.Client{Transport: tr}
+	resp, err := client.Get("http://invalid-url-that-fails.test")
+	if err != nil {
+		// expected
+	}
+	_ = resp
+
+	mu.Lock()
+	defer mu.Unlock()
+	if capturedErr == nil {
+		t.Fatal("expected error to be captured")
+	}
 }
 
 // Ensure Transport implements RoundTripper

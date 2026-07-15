@@ -22,6 +22,10 @@ func NewClient(e httpexporter.Exporter) *req.Client {
 //	c := req.C()
 //	c.SetTransport(httptransport.New(httpexporter.WithExporter(e), ...))
 func Install(client *req.Client, e httpexporter.Exporter) {
+	if e == nil {
+		return
+	}
+
 	client.OnBeforeRequest(func(c *req.Client, r *req.Request) error {
 		if r.Context() == nil {
 			r.SetContext(context.Background())

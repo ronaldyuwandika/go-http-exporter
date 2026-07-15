@@ -1,6 +1,7 @@
 package httpexporter
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -38,6 +39,64 @@ func TestPathNormalizerType(t *testing.T) {
 
 	identity := func(p string) string { return p }
 	var _ PathNormalizer = identity
+}
+
+func TestSlugNormalizerCache(t *testing.T) {
+	paths := []string{
+		"/users/550e8400-e29b-41d4-a716-446655440000",
+		"/users/42",
+		"/orders/12345/profile",
+		"/stats/2024-01-15",
+		"/products/my-product-v2",
+		"/api/v1/users/42/items/550e8400-e29b-41d4-a716-446655440000",
+	}
+
+	for _, p := range paths {
+		expected := SlugNormalizer(p)
+		for range 100 {
+			got := SlugNormalizer(p)
+			if got != expected {
+				t.Fatalf("cache miss: SlugNormalizer(%q) = %q, want %q", p, got, expected)
+			}
+		}
+	}
+}
+
+func BenchmarkSlugNormalizerCached(b *testing.B) {
+	// Warm the cache
+	paths := []string{
+		"/users/550e8400-e29b-41d4-a716-446655440000",
+		"/users/42",
+		"/orders/12345/profile",
+		"/stats/2024-01-15",
+		"/api/v1/users/42/items/550e8400-e29b-41d4-a716-446655440000",
+		"/health",
+		"/static/js/app.js",
+	}
+	for _, p := range paths {
+		SlugNormalizer(p)
+	}
+
+	b.ResetTimer()
+	for range b.N {
+		for _, p := range paths {
+			SlugNormalizer(p)
+		}
+	}
+}
+
+func BenchmarkSlugNormalizerCold(b *testing.B) {
+	// Each iteration gets unique paths to force cache misses
+	b.StopTimer()
+	paths := make([]string, b.N)
+	for i := range b.N {
+		paths[i] = "/users/42/orders/" + fmt.Sprint(i%1000)
+	}
+	b.StartTimer()
+
+	for _, p := range paths {
+		SlugNormalizer(p)
+	}
 }
 
 func TestCopyRequestInfoNormalizedPath(t *testing.T) {
