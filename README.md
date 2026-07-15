@@ -12,6 +12,7 @@ Prometheus-ready HTTP client metrics SDK for Go. One interface, four HTTP client
 - **Path normalization** — auto-detect UUIDs, IDs, dates, slugs to prevent cardinality explosion
 - **DNS latency** — DNS resolution timing via `net/http/httptrace`
 - **Per-path metrics** — latency histograms, error rates, request/response sizes per path
+- **Status code counter** — dedicated counter with `status_code` + `status_family` labels (2xx/4xx/5xx)
 - **Go version** — root module supports 1.24+; optional `reqexporter` sub-module at 1.25+
 
 ## Install
@@ -115,6 +116,18 @@ client := slingexporter.NewHTTPClient(myExporter, nil,
 | `http_client_size_request_bytes` | Histogram | method, host, path, status_code |
 | `http_client_size_response_bytes` | Histogram | method, host, path, status_code |
 | `http_client_errors_total` | Counter | method, host, path, status_code |
+| `http_client_response_status_code_total` | Counter | status_code, status_family |
+
+Alerting examples:
+
+```promql
+# Error rate per status family
+sum(rate(http_client_response_status_code_total{status_family=~"4xx|5xx"}[5m]))
+/ sum(rate(http_client_response_status_code_total[5m]))
+
+# 99th percentile latency per normalized path
+histogram_quantile(0.99, rate(http_client_duration_seconds_bucket[5m]))
+```
 
 ## Path normalization
 
