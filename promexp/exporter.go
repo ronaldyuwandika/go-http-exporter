@@ -51,6 +51,7 @@ type Exporter struct {
 	requestSize     *prometheus.HistogramVec
 	responseSize    *prometheus.HistogramVec
 	errorsTotal     *prometheus.CounterVec
+	disableDNS      bool
 }
 
 // Verify Exporter implements httpexporter.Exporter.
@@ -73,10 +74,14 @@ func newWithNamespace(ns string, buckets []float64, defaultBuckets []float64) *E
 		buckets = defaultBuckets
 	}
 
+	server := ns == "http_server"
+
 	labels := []string{"method", "host", "path", "status_code"}
 	statusCodeLabels := []string{"status_code", "status_family"}
 
 	e := &Exporter{
+		disableDNS: server,
+
 		requestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: ns,
 			Subsystem: subsystemRequests,
@@ -90,14 +95,6 @@ func newWithNamespace(ns string, buckets []float64, defaultBuckets []float64) *E
 			Name:      "seconds",
 			Help:      "HTTP request duration in seconds.",
 			Buckets:   buckets,
-		}, labels),
-
-		dnsDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Namespace: ns,
-			Subsystem: subsystemDns,
-			Name:      "lookup_seconds",
-			Help:      "DNS lookup duration in seconds.",
-			Buckets:   DefaultDNSBuckets,
 		}, labels),
 
 		requestSize: prometheus.NewHistogramVec(prometheus.HistogramOpts{
@@ -131,6 +128,16 @@ func newWithNamespace(ns string, buckets []float64, defaultBuckets []float64) *E
 		}, statusCodeLabels),
 	}
 
+	if !server {
+		e.dnsDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: ns,
+			Subsystem: subsystemDns,
+			Name:      "lookup_seconds",
+			Help:      "DNS lookup duration in seconds.",
+			Buckets:   DefaultDNSBuckets,
+		}, labels)
+	}
+
 	return e
 }
 
@@ -149,10 +156,12 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	e.requestsTotal.Describe(ch)
 	e.statusCodeTotal.Describe(ch)
 	e.requestDuration.Describe(ch)
-	e.dnsDuration.Describe(ch)
 	e.requestSize.Describe(ch)
 	e.responseSize.Describe(ch)
 	e.errorsTotal.Describe(ch)
+	if !e.disableDNS {
+		e.dnsDuration.Describe(ch)
+	}
 }
 
 // Collect implements prometheus.Collector.
@@ -160,10 +169,12 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	e.requestsTotal.Collect(ch)
 	e.statusCodeTotal.Collect(ch)
 	e.requestDuration.Collect(ch)
-	e.dnsDuration.Collect(ch)
 	e.requestSize.Collect(ch)
 	e.responseSize.Collect(ch)
 	e.errorsTotal.Collect(ch)
+	if !e.disableDNS {
+		e.dnsDuration.Collect(ch)
+	}
 }
 
 // Export records HTTP metrics from the request/response cycle.
@@ -196,7 +207,7 @@ func (e *Exporter) Export(ctx context.Context, req *httpexporter.RequestInfo, re
 		}).Inc()
 	}
 
-	if req.DNSDuration > 0 {
+	if !e.disableDNS && req.DNSDuration > 0 {
 		e.dnsDuration.With(labels).Observe(req.DNSDuration.Seconds())
 	}
 

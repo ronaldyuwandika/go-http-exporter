@@ -152,11 +152,12 @@ Server histograms start at 0.1 ms (100 µs) for single-digit millisecond det
 |--------|------|--------|
 | `http_server_requests_total` | Counter | method, host, path, status_code |
 | `http_server_duration_seconds` | Histogram | method, host, path, status_code |
-| `http_server_dns_lookup_seconds` | Histogram | method, host, path, status_code |
 | `http_server_size_request_bytes` | Histogram | method, host, path, status_code |
 | `http_server_size_response_bytes` | Histogram | method, host, path, status_code |
 | `http_server_errors_total` | Counter | method, host, path, status_code |
 | `http_server_response_status_code_total` | Counter | status_code, status_family |
+
+> DNS lookup is client-only — `http_server_dns_lookup_seconds` is intentionally omitted from the server exporter.
 
 Alerting examples:
 
